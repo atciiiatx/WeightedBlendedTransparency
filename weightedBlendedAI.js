@@ -60,6 +60,11 @@ export class WeightedBlendedAIExperiment {
     this.sphereMaterials = [];
     this.roomMaterials = [];
     this.barMaterials = [];
+    // WBOIT resources (in-file implementation)
+    this.accumTarget = null;
+    this.compositeScene = null;
+    this.compositeCamera = null;
+    this.compositeMaterial = null;
     this.opacity = 1.0;
   }
 
@@ -98,6 +103,50 @@ export class WeightedBlendedAIExperiment {
       this.renderer.domElement,
     );
     orbitControl.enableZoom = true;
+
+    // Create accumulation render target for weighted blended OIT
+    const rtParams = {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.FloatType,
+      depthBuffer: true,
+    };
+    this.accumTarget = new THREE.WebGLRenderTarget(
+      window.innerWidth,
+      window.innerHeight,
+      rtParams,
+    );
+
+    // Fullscreen composite scene (composites accum into background)
+    this.compositeScene = new THREE.Scene();
+    this.compositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const quadGeo = new THREE.PlaneGeometry(2, 2);
+    this.compositeMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        accumTexture: { value: this.accumTarget.texture },
+        bgColor: { value: this.backgroundColor.clone() },
+        eps: { value: 1e-5 },
+      },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position,1.0); }`,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform sampler2D accumTexture;
+        uniform vec3 bgColor;
+        uniform float eps;
+        void main(){
+          vec4 acc = texture2D(accumTexture, vUv);
+          float a = acc.a;
+          vec3 color = acc.rgb / max(a, eps);
+          vec3 outColor = color + bgColor * (1.0 - clamp(a, 0.0, 1.0));
+          gl_FragColor = vec4(outColor, 1.0);
+        }
+      `,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const quad = new THREE.Mesh(quadGeo, this.compositeMaterial);
+    this.compositeScene.add(quad);
   }
 
   onResize() {
@@ -105,6 +154,17 @@ export class WeightedBlendedAIExperiment {
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    if (this.accumTarget) {
+      this.accumTarget.setSize(window.innerWidth, window.innerHeight);
+      if (
+        this.compositeMaterial &&
+        this.compositeMaterial.uniforms &&
+        this.compositeMaterial.uniforms.accumTexture
+      ) {
+        this.compositeMaterial.uniforms.accumTexture.value =
+          this.accumTarget.texture;
+      }
+    }
   }
 
   createLights() {
@@ -224,8 +284,44 @@ export class WeightedBlendedAIExperiment {
   }
 
   createMaterial(params) {
-    const material = new THREE.MeshPhongMaterial(params);
-    return material;
+    // Create a simple accumulation ShaderMaterial that outputs premultiplied color
+    const color =
+      params.color instanceof THREE.Color
+        ? params.color
+        : new THREE.Color(params.color);
+    const opacity = params.opacity !== undefined ? params.opacity : 1.0;
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: color.clone() },
+        uOpacity: { value: opacity },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main(){
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        void main(){
+          vec3 premul = uColor * uOpacity;
+          gl_FragColor = vec4(premul, uOpacity);
+        }
+      `,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneFactor,
+    });
+    return mat;
   }
 
   createSphereMaterial() {
@@ -239,22 +335,32 @@ export class WeightedBlendedAIExperiment {
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
     `;
-    const fragmentShader = `
-        uniform float opacity;
-        varying vec3 vNormal;
-        void main() {
-            // Map the -1.0 to 1.0 normal vector to 0.0 to 1.0 for RGB colors
-            vec3 color = vNormal * 0.5 + 0.5;
-            gl_FragColor = vec4(color,opacity);
-        }
-    `;
+    // For accumulation pass we output premultiplied color using a fixed color
     const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uOpacity: { value: 1.0 },
+        uColor: { value: new THREE.Color("darkgray") },
+      },
       vertexShader: vertexShader,
-      fragmentShader: fragmentShader,
-      uniforms: customUniforms,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform vec3 uColor;
+        void main() {
+          vec3 premul = uColor * uOpacity;
+          gl_FragColor = vec4(premul, uOpacity);
+        }
+      `,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneFactor,
     });
     material.name = "sphereMaterial";
-    material.transparent = false;
     return material;
   }
 
@@ -446,7 +552,35 @@ export class WeightedBlendedAIExperiment {
   }
 
   render() {
+    // Accumulation pass: render scene into accumulation target with additive blending
+    if (!this.accumTarget) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
+    // Clear accumulation target
+    const prevRenderTarget = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(this.accumTarget);
+    this.renderer.clearColor();
+    this.renderer.clear(true, true, true);
+
+    // Render the scene; materials are set up to output premultiplied color
     this.renderer.render(this.scene, this.camera);
+
+    // Composite pass: draw fullscreen quad sampling the accumulation target
+    this.renderer.setRenderTarget(null);
+    if (
+      this.compositeMaterial &&
+      this.compositeMaterial.uniforms &&
+      this.compositeMaterial.uniforms.accumTexture
+    ) {
+      this.compositeMaterial.uniforms.accumTexture.value =
+        this.accumTarget.texture;
+    }
+    this.renderer.render(this.compositeScene, this.compositeCamera);
+
+    // restore previous render target
+    this.renderer.setRenderTarget(prevRenderTarget);
   }
 
   addListeners() {
@@ -508,8 +642,9 @@ export class WeightedBlendedAIExperiment {
         }
         if ("uniforms" in material) {
           const uniforms = material.uniforms;
-          if (uniforms && "opacity" in uniforms) {
-            uniforms.opacity.value = opacity;
+          if (uniforms) {
+            if ("opacity" in uniforms) uniforms.opacity.value = opacity;
+            if ("uOpacity" in uniforms) uniforms.uOpacity.value = opacity;
           }
         }
       }
