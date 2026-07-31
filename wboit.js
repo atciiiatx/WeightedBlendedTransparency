@@ -52,13 +52,10 @@ export class WboitExperiment {
     this.scene = null;
     this.camera = null;
     this.renderer = null;
-    this.orbitControl = null;
     this.fov = 75;
-    this.cameraPosition = new THREE.Vector3(0, 0, 0);
-    this.rendererParams = { antialias: true };
-    this.backgroundColor = new THREE.Color(0x0044cc);
     this.cameraPosition = new THREE.Vector3(0, 0, 5);
-    this.rendererParams = { preserveDrawingBuffer: true };
+    this.rendererParams = { antialias: true, preserveDrawingBuffer: true };
+    this.backgroundColor = new THREE.Color(0x0044cc);
     this.torusMaterials = [];
     this.boxMaterials = [];
     this.sphereMaterials = [];
@@ -99,11 +96,11 @@ export class WboitExperiment {
     document.body.appendChild(this.renderer.domElement);
 
     // Create an orbit camera control
-    this.orbitControl = new OrbitControls(
+    const orbitControl = new OrbitControls(
       this.camera,
       this.renderer.domElement,
     );
-    this.orbitControl.enableZoom = true;
+    orbitControl.enableZoom = true;
   }
 
   onResize() {
@@ -113,22 +110,8 @@ export class WboitExperiment {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  getSize() {
-    const size = new THREE.Vector3();
-    size.set(
-      window.innerWidth,
-      window.innerHeight,
-      window.innerWidth / window.innerHeight,
-    );
-    return size;
-  }
-
   createLights() {
     const white = new THREE.Color(1, 1, 1);
-    const dirLightColor = white;
-    const pointLightColor = white;
-    const ambientLightColor = white;
-
     const dirLightIntensity = 1.2;
     const pointLightIntensity = 0.7;
     const ambientLightIntensity = 0.2;
@@ -136,66 +119,56 @@ export class WboitExperiment {
     const lightRoot = new THREE.Object3D();
     lightRoot.name = "cameraLightRoot";
 
-    const dirLight = new THREE.DirectionalLight(
-      dirLightColor,
-      dirLightIntensity,
-    );
+    const dirLight = new THREE.DirectionalLight(white, dirLightIntensity);
     dirLight.name = "dirLight";
     dirLight.position.set(10, 50, 20);
     lightRoot.add(dirLight);
 
-    const pointLight = new THREE.PointLight(
-      pointLightColor,
-      pointLightIntensity,
-    );
+    const pointLight = new THREE.PointLight(white, pointLightIntensity);
     pointLight.name = "pointLight";
     pointLight.position.set(2, 2, 2);
     lightRoot.add(pointLight);
 
-    const ambientLight = new THREE.AmbientLight(
-      ambientLightColor,
-      ambientLightIntensity,
-    );
+    const ambientLight = new THREE.AmbientLight(white, ambientLightIntensity);
     lightRoot.add(ambientLight);
 
     this.scene.add(lightRoot);
   }
 
   createMaterials() {
-    // Materials for torus objects
-    for (let i = 0; i < cssColors.length; i++) {
-      const torusMaterial = this.createTorusMaterial(i);
-      this.torusMaterials.push(torusMaterial);
-    }
+    this.torusMaterials = this.createMaterialPool(
+      "torusMaterial",
+      cssColors,
+      cssColors.length,
+      true,
+    );
+    this.boxMaterials = this.createMaterialPool(
+      "boxMaterial",
+      cssColors,
+      cssColors.length,
+      true,
+    );
 
-    // Materials for box objects
-    for (let i = 0; i < cssColors.length; i++) {
-      const boxMaterial = this.createBoxMaterial(i);
-      this.boxMaterials.push(boxMaterial);
-    }
-
-    // Materials for spheres
     const sphereMaterial = this.createSphereMaterial();
-    for (let i = 0; i < cssColors.length; i++) {
-      this.sphereMaterials.push(sphereMaterial);
-    }
+    this.sphereMaterials = Array.from(
+      { length: cssColors.length },
+      () => sphereMaterial,
+    );
 
-    // Materials for bars
-    for (let i = 0; i < barColors.length; i++) {
-      const barMaterial = this.createBarMaterial(i);
-      this.barMaterials.push(barMaterial);
-    }
+    this.barMaterials = this.createMaterialPool(
+      "barMaterial",
+      barColors,
+      barColors.length,
+      false,
+    );
 
-    // Room material
-    const roomMaterial = this.createRoomMaterial();
-    this.roomMaterials.push(roomMaterial);
+    this.roomMaterials = [this.createRoomMaterial()];
 
-    // Set opacity to current
     this.setMaterialOpacity(this.opacity);
   }
 
   recreateMaterials() {
-    let toDelete = [];
+    const toDelete = [];
     for (const materialList of [
       this.torusMaterials,
       this.boxMaterials,
@@ -221,37 +194,12 @@ export class WboitExperiment {
         material.dispose();
       }
     }
-    toDelete = [];
   }
 
-  createBarMaterial(i) {
-    const material = this.createPaletteMaterial(
-      i,
-      "barMaterial",
-      barColors,
-      false,
+  createMaterialPool(prefix, colors, count, transparent = true) {
+    return Array.from({ length: count }, (_, index) =>
+      this.createPaletteMaterial(index, prefix, colors, transparent),
     );
-    return material;
-  }
-
-  createBoxMaterial(i) {
-    const material = this.createPaletteMaterial(
-      i,
-      "boxMaterial",
-      cssColors,
-      true,
-    );
-    return material;
-  }
-
-  createTorusMaterial(i) {
-    const material = this.createPaletteMaterial(
-      i,
-      "torusMaterial",
-      cssColors,
-      true,
-    );
-    return material;
   }
 
   createRoomMaterial() {
@@ -336,63 +284,65 @@ export class WboitExperiment {
     return material;
   }
 
-  randomInteger(range) {
-    return Math.floor(Math.random() * range);
-  }
-
   createGeometry() {
     const geometryRoot = new THREE.Object3D();
     geometryRoot.name = "geometryRoot";
 
-    // Add walls
-    const walls = this.createWalls();
-    geometryRoot.add(walls);
+    geometryRoot.add(this.createWalls());
 
-    // Add torus objects in a circle
-    const rotationStepY = (2 * Math.PI) / torusCount;
-    for (
-      let i = 0, rotationAngleY = 0;
-      i < torusCount;
-      i++, rotationAngleY += rotationStepY
-    ) {
-      const torus = this.createTorus(i, rotationAngleY);
-      geometryRoot.add(torus);
-    }
+    const torusRotationStep = (2 * Math.PI) / torusCount;
+    geometryRoot.add(
+      ...this.createCircularObjects(
+        torusCount,
+        torusRotationStep,
+        0,
+        (i, rotationAngle) => this.createTorus(i, rotationAngle),
+      ),
+    );
 
-    // Add boxes in a circle
-    const rotationStepZ = (2 * Math.PI) / boxCount;
-    for (
-      let i = 0, rotationAngleZ = rotationStepZ / 2;
-      i < boxCount;
-      i++, rotationAngleZ += rotationStepZ
-    ) {
-      const box = this.createBox(i, rotationAngleZ);
-      geometryRoot.add(box);
-    }
+    const boxRotationStep = (2 * Math.PI) / boxCount;
+    geometryRoot.add(
+      ...this.createCircularObjects(
+        boxCount,
+        boxRotationStep,
+        boxRotationStep / 2,
+        (i, rotationAngle) => this.createBox(i, rotationAngle),
+      ),
+    );
 
-    // Add spheres in a circle
-    const sphereRotationStepZ = (2 * Math.PI) / sphereCount;
-    for (
-      let i = 0, rotZ = sphereRotationStepZ / 2;
-      i < sphereCount;
-      i++, rotZ += sphereRotationStepZ
-    ) {
-      const sphere = this.createSphere(i, rotZ);
-      geometryRoot.add(sphere);
-    }
+    const sphereRotationStep = (2 * Math.PI) / sphereCount;
+    geometryRoot.add(
+      ...this.createCircularObjects(
+        sphereCount,
+        sphereRotationStep,
+        sphereRotationStep / 2,
+        (i, rotationAngle) => this.createSphere(i, rotationAngle),
+      ),
+    );
 
-    // Add bars in a circle
-    const barRotationStepZ = (2 * Math.PI) / barCount;
-    for (
-      let i = 0, rotZ = barRotationStepZ / 4;
-      i < barCount;
-      i++, rotZ += barRotationStepZ
-    ) {
-      const bar = this.createBar(i, rotZ);
-      geometryRoot.add(bar);
-    }
+    const barRotationStep = (2 * Math.PI) / barCount;
+    geometryRoot.add(
+      ...this.createCircularObjects(
+        barCount,
+        barRotationStep,
+        barRotationStep / 4,
+        (i, rotationAngle) => this.createBar(i, rotationAngle),
+      ),
+    );
 
     this.scene.add(geometryRoot);
+  }
+
+  createCircularObjects(count, step, startAngle, factory) {
+    const objects = [];
+    for (
+      let i = 0, rotationAngle = startAngle;
+      i < count;
+      i++, rotationAngle += step
+    ) {
+      objects.push(factory(i, rotationAngle));
+    }
+    return objects;
   }
 
   assignMaterialsToObjects() {
@@ -401,19 +351,23 @@ export class WboitExperiment {
       return;
     }
 
+    const materialAssignments = [
+      { prefix: "bar", materials: this.boxMaterials },
+      { prefix: "box", materials: this.boxMaterials },
+      { prefix: "sphere", materials: this.sphereMaterials },
+      { prefix: "torus", materials: this.torusMaterials },
+    ];
+
     for (const child of geometryRoot.children) {
-      if (child.name.startsWith("bar")) {
-        const index = parseInt(child.name.replace("bar", ""), 10);
-        child.material = this.boxMaterials[index];
-      } else if (child.name.startsWith("box")) {
-        const index = parseInt(child.name.replace("box", ""), 10);
-        child.material = this.boxMaterials[index];
-      } else if (child.name.startsWith("sphere")) {
-        const index = parseInt(child.name.replace("sphere", ""), 10);
-        child.material = this.sphereMaterials[index];
-      } else if (child.name.startsWith("torus")) {
-        const index = parseInt(child.name.replace("torus", ""), 10);
-        child.material = this.torusMaterials[index];
+      const assignment = materialAssignments.find(({ prefix }) =>
+        child.name.startsWith(prefix),
+      );
+
+      if (assignment) {
+        const index = parseInt(child.name.slice(assignment.prefix.length), 10);
+        if (!Number.isNaN(index)) {
+          child.material = assignment.materials[index];
+        }
       } else if (child.name.startsWith("wall")) {
         child.material = this.roomMaterials[0];
       }
@@ -432,37 +386,47 @@ export class WboitExperiment {
     return wall;
   }
 
+  createMesh(geometry, material, name, transform) {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = name;
+    if (transform) {
+      mesh.applyMatrix4(transform);
+    }
+    return mesh;
+  }
+
   createTorus(i, rotationAngle) {
     const torusGeometry = new THREE.TorusGeometry(torusRadius, torusTube);
-    const objMesh = new THREE.Mesh(torusGeometry, this.torusMaterials[i]);
-    objMesh.name = "torus" + i;
-    const rotMatrix = new THREE.Matrix4();
-    rotMatrix.makeRotationY(rotationAngle);
-    const transMatrix = new THREE.Matrix4();
-    transMatrix.makeTranslation(
+    const transform = new THREE.Matrix4().makeTranslation(
       Math.cos(rotationAngle) * torusCircleRadius,
       Math.sin(rotationAngle) * torusCircleRadius,
       0,
     );
-    const geoMatrix = transMatrix.multiply(rotMatrix);
-    objMesh.applyMatrix4(geoMatrix);
-    return objMesh;
+    const rotationMatrix = new THREE.Matrix4().makeRotationY(rotationAngle);
+    transform.multiply(rotationMatrix);
+    return this.createMesh(
+      torusGeometry,
+      this.torusMaterials[i],
+      `torus${i}`,
+      transform,
+    );
   }
 
   createBox(i, rotationAngle) {
     const boxHeight =
       boxMinY + Math.abs(Math.sin(rotationAngle)) * (boxMaxY - boxMinY);
     const boxGeometry = new THREE.BoxGeometry(boxX, boxHeight, boxZ);
-    const objMesh = new THREE.Mesh(boxGeometry, this.boxMaterials[i]);
-    objMesh.name = "box" + i;
-    const transMatrix = new THREE.Matrix4();
-    transMatrix.makeTranslation(
+    const transform = new THREE.Matrix4().makeTranslation(
       Math.cos(rotationAngle) * boxCircleRadius,
       -(roomSurfaceSize / 2) + boxHeight / 2,
       Math.sin(rotationAngle) * boxCircleRadius,
     );
-    objMesh.applyMatrix4(transMatrix);
-    return objMesh;
+    return this.createMesh(
+      boxGeometry,
+      this.boxMaterials[i],
+      `box${i}`,
+      transform,
+    );
   }
 
   createSphere(i, rotationAngle) {
@@ -473,16 +437,17 @@ export class WboitExperiment {
     );
     const sphereMaterial =
       this.sphereMaterials[i % this.sphereMaterials.length];
-    const objMesh = new THREE.Mesh(sphereGeometry, sphereMaterial);
-    objMesh.name = "sphere" + i;
-    const transMatrix = new THREE.Matrix4();
-    transMatrix.makeTranslation(
+    const transform = new THREE.Matrix4().makeTranslation(
       Math.cos(rotationAngle) * sphereCircleRadius,
       Math.cos(rotationAngle * 2) * sphereRadius,
       Math.sin(rotationAngle) * sphereCircleRadius,
     );
-    objMesh.applyMatrix4(transMatrix);
-    return objMesh;
+    return this.createMesh(
+      sphereGeometry,
+      sphereMaterial,
+      `sphere${i}`,
+      transform,
+    );
   }
 
   createBar(i, rotationAngle) {
@@ -493,16 +458,12 @@ export class WboitExperiment {
       barSegments,
     );
     const barMaterial = this.barMaterials[i % this.barMaterials.length];
-    const objMesh = new THREE.Mesh(barGeometry, barMaterial);
-    objMesh.name = "bar" + i;
-    const transMatrix = new THREE.Matrix4();
-    transMatrix.makeTranslation(
+    const transform = new THREE.Matrix4().makeTranslation(
       Math.cos(rotationAngle) * barCircleRadius,
-      0, // -(roomSurfaceSize / 2) + barRadius / 2,
+      0,
       Math.sin(rotationAngle) * barCircleRadius,
     );
-    objMesh.applyMatrix4(transMatrix);
-    return objMesh;
+    return this.createMesh(barGeometry, barMaterial, `bar${i}`, transform);
   }
 
   createWboitPass() {
