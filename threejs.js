@@ -220,10 +220,10 @@ export class ThreeJSExperiment {
       transparent: transparent,
       side: THREE.DoubleSide,
     };
-    return this.createMaterial(params, transparent);
+    return this.createMaterial(params);
   }
 
-  createMaterial(params, transparent) {
+  createMaterial(params) {
     const material = new THREE.MeshPhongMaterial(params);
     return material;
   }
